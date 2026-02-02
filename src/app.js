@@ -15,13 +15,22 @@ app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 // ✅ CORS
-const allowedOrigin = process.env.CORS_ORIGIN || "http://localhost:4200";
-app.use(
-    cors({
-        origin: allowedOrigin,
-        credentials: true,
-    })
-);
+const allowedOrigins = (process.env.CORS_ORIGINS || "http://localhost:4200")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean);
+
+app.use(cors({
+    origin: function (origin, callback) {
+        // Autoriser Postman/curl (origin undefined)
+        if (!origin) return callback(null, true);
+
+        if (allowedOrigins.includes(origin)) return callback(null, true);
+
+        return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+    credentials: true
+}));
 
 // ✅ Health check
 app.get("/api/health", (req, res) => {
