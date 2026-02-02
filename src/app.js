@@ -1,0 +1,52 @@
+// src/app.js
+const express = require("express");
+const cors = require("cors");
+
+// ✅ Import routes
+const optionsRoutes = require("./routes/options.routes");
+const vehicleRoutes = require("./routes/vehicle.routes");
+const vehicleImagesRoutes = require("./routes/vehicleImages.routes");
+const bookingRoutes = require("./routes/booking.routes");
+
+const app = express();
+
+// ✅ Middlewares (body parsers)
+app.use(express.json({ limit: "5mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+// ✅ CORS
+const allowedOrigin = process.env.CORS_ORIGIN || "http://localhost:4200";
+app.use(
+    cors({
+        origin: allowedOrigin,
+        credentials: true,
+    })
+);
+
+// ✅ Health check
+app.get("/api/health", (req, res) => {
+    res.json({ status: "ok", app: "WagenMiete API" });
+});
+
+// ✅ API routes
+app.use("/api/options", optionsRoutes);
+app.use("/api/vehicle", vehicleRoutes);
+app.use("/api/vehicle/images", vehicleImagesRoutes);
+app.use("/api/booking", bookingRoutes);
+
+// ✅ 404 API (si route inconnue)
+app.use("/api", (req, res) => {
+    res.status(404).json({ message: "API route not found" });
+});
+
+// ✅ Global error handler (catch erreurs)
+app.use((err, req, res, next) => {
+    console.error("Unhandled error:", err);
+
+    const status = err.status || 500;
+    const message = err.message || "Server error";
+
+    res.status(status).json({ message });
+});
+
+module.exports = app;
