@@ -4,15 +4,16 @@ const router = express.Router();
 const bookingController = require("../controllers/booking.controller");
 
 // Step 1
-router.post("/customer-info", bookingController.createCustomerInfo);
+router.post("/draft/step1", bookingController.createBookingDraftStep1);
 
 // Step 2
-router.post("/period", bookingController.createPeriod);
+router.put("/draft/step2", bookingController.setBookingPackage);
 
-// Step 2.5 (draft booking)
-router.post("/draft", bookingController.createBookingDraft);
+// STEP 3 – options + total
+router.post("/draft/step3", bookingController.setBookingOptionsAndPrice);
 
-// Step 3
-router.post("/options", bookingController.saveOptions);
+router.get('/availability/next-date', bookingController.getNextAvailableDate);
+
+router.post("/finalize-payment", bookingController.finalizeBookingForPayment);
 
 module.exports = router;

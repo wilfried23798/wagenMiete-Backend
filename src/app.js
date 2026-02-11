@@ -1,12 +1,15 @@
 // src/app.js
 const express = require("express");
 const cors = require("cors");
+require('dotenv').config();
 
 // ✅ Import routes
 const optionsRoutes = require("./routes/options.routes");
 const vehicleRoutes = require("./routes/vehicle.routes");
 const vehicleImagesRoutes = require("./routes/vehicleImages.routes");
 const bookingRoutes = require("./routes/booking.routes");
+const availabilityRoutes = require("./routes/availability.routes");
+const pricingRoutes = require("./routes/pricing.routes");
 
 const app = express();
 
@@ -42,6 +45,8 @@ app.use("/api/options", optionsRoutes);
 app.use("/api/vehicle", vehicleRoutes);
 app.use("/api/vehicle/images", vehicleImagesRoutes);
 app.use("/api/booking", bookingRoutes);
+app.use("/api/availability", availabilityRoutes);
+app.use("/api/pricing", pricingRoutes);
 
 // ✅ 404 API (si route inconnue)
 app.use("/api", (req, res) => {
