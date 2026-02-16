@@ -199,7 +199,131 @@ module.exports = {
         } catch (err) {
             return next(err);
         }
-    }
+    },
+
+    // =========================
+    // Create NIGHT availability
+    // =========================
+    createNightAvailability: async (req, res, next) => {
+        try {
+            const {
+                vehicleId = null,
+                date,          // "YYYY-MM-DD"
+                startTime,     // "HH:mm"
+                endTime        // "HH:mm"
+            } = req.body;
+
+            if (!date || !startTime || !endTime) {
+                return res.status(400).json({
+                    message: "date, startTime et endTime sont requis."
+                });
+            }
+
+            // Construire les datetime
+            let startDateTime = `${date} ${startTime}:00`;
+            let endDateTime = `${date} ${endTime}:00`;
+
+            const start = new Date(startDateTime);
+            let end = new Date(endDateTime);
+
+            if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+                return res.status(400).json({
+                    message: "Format date/heure invalide."
+                });
+            }
+
+            // Si fin < début → on considère que ça traverse minuit
+            if (end <= start) {
+                end.setDate(end.getDate() + 1);
+                endDateTime = end.toISOString().slice(0, 19).replace("T", " ");
+            }
+
+            // Validation NIGHT (après 20h ou traverse minuit)
+            const startHour = start.getHours();
+
+            if (startHour < 20 && end > start && end.getDate() === start.getDate()) {
+                return res.status(400).json({
+                    message: "Une disponibilité nuit doit commencer après 20h ou traverser minuit."
+                });
+            }
+
+            // Anti-chevauchement
+            const [conflicts] = await db.execute(
+                `
+            SELECT id
+            FROM availabilities
+            WHERE (? IS NULL OR vehicleId = ?)
+              AND startDateTime < ?
+              AND endDateTime > ?
+            LIMIT 1
+            `,
+                [vehicleId, vehicleId, endDateTime, startDateTime]
+            );
+
+            if (conflicts.length > 0) {
+                return res.status(409).json({
+                    message: "Ce créneau nuit chevauche une disponibilité existante.",
+                    conflictId: conflicts[0].id
+                });
+            }
+
+            const [insert] = await db.execute(
+                `
+            INSERT INTO availabilities 
+            (vehicleId, startDateTime, endDateTime, status, note)
+            VALUES (?, ?, ?, 'available', 'night')
+            `,
+                [vehicleId, startDateTime, endDateTime]
+            );
+
+            const [rows] = await db.execute(
+                `SELECT * FROM availabilities WHERE id = ? LIMIT 1`,
+                [insert.insertId]
+            );
+
+            return res.status(201).json({
+                message: "Disponibilité nuit créée avec succès.",
+                availability: rows[0]
+            });
+
+        } catch (err) {
+            return next(err);
+        }
+    },
+
+    // =========================
+    // Delete NIGHT availability
+    // =========================
+    deleteNightAvailability: async (req, res, next) => {
+        try {
+            const { id } = req.params;
+
+            if (!id) {
+                return res.status(400).json({ message: "Availability id is required" });
+            }
+
+            const [result] = await db.execute(
+                `
+            DELETE FROM availabilities 
+            WHERE id = ? AND note = 'night'
+            `,
+                [id]
+            );
+
+            if (result.affectedRows === 0) {
+                return res.status(404).json({
+                    message: "Night availability not found"
+                });
+            }
+
+            return res.status(200).json({
+                message: "Night availability deleted successfully"
+            });
+
+        } catch (err) {
+            return next(err);
+        }
+    },
 
 
 };

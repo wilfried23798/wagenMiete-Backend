@@ -10,203 +10,115 @@ function getDbMethod() {
 module.exports = {
 
   // =========================
-  // STEP 1 – Create booking draft + customer info
+  // STEP 1 – Choose package
   // =========================
   createBookingDraftStep1: async (req, res, next) => {
     try {
-      const {
-        firstName,
-        lastName,
-        street,
-        city,
-        postalCode,
-        country,
-        phone,
-        email,
-      } = req.body;
+      const { packageType } = req.body;
 
-      if (
-        !firstName ||
-        !lastName ||
-        !street ||
-        !city ||
-        !postalCode ||
-        !country ||
-        !phone ||
-        !email
-      ) {
-        return res.status(400).json({ message: "All fields are required." });
+      if (!packageType) {
+        return res.status(400).json({
+          message: "Le type de forfait est requis."
+        });
       }
 
       const method = getDbMethod();
 
-      // 1) insert customer info
-      const customerSql = `
-        INSERT INTO booking_customer_info
-        (first_name, last_name, street, city, postal_code, country, phone, email)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `;
-
-      const customerValues = [
-        firstName.trim(),
-        lastName.trim(),
-        street.trim(),
-        city.trim(),
-        postalCode.trim(),
-        country.trim(),
-        phone.trim(),
-        email.trim().toLowerCase(),
-      ];
-
-      const [customerRes] = await db[method](customerSql, customerValues);
-      const customerInfoId = customerRes.insertId;
-
-      // 2) create booking draft immediately
+      // Utilise les noms exacts des colonnes créées dans l'étape SQL ci-dessus
       const bookingSql = `
-        INSERT INTO bookings (customer_info_id, status)
-        VALUES (?, 'draft')
+        INSERT INTO bookings (package_type, status, created_at)
+        VALUES (?, 'draft', NOW())
       `;
-      const [bookingRes] = await db[method](bookingSql, [Number(customerInfoId)]);
-      const bookingId = bookingRes.insertId;
+
+      const [bookingRes] = await db[method](bookingSql, [packageType]);
 
       return res.status(201).json({
-        message: "Booking draft created (step 1).",
-        bookingId,
-        customerInfoId,
+        message: "Brouillon initialisé.",
+        bookingId: bookingRes.insertId,
+        packageType
       });
     } catch (err) {
+      console.error("Erreur SQL détaillée:", err.sqlMessage); // Pour debug
       next(err);
     }
   },
 
   // =========================
-  // STEP 2 – Choose package
+  // STEP 2 – Choose available and inser Time and Locasition
   // =========================
-  setBookingPackage: async (req, res, next) => {
+  setBookingAvailabilityAndDetails: async (req, res, next) => {
     try {
-      const { bookingId, packageType } = req.body;
+      const { bookingId, availabilityId, pickupTime, pickupLocation } = req.body;
 
-      if (!bookingId || !packageType) {
+      if (!bookingId || !availabilityId || !pickupTime || !pickupLocation) {
         return res.status(400).json({
-          message: "bookingId and packageType are required.",
-        });
-      }
-
-      const allowed = ["go-direct", "standard", "celebration", "nightlife"];
-      if (!allowed.includes(packageType)) {
-        return res.status(400).json({
-          message: "Invalid packageType. Allowed: go-direct, standard, celebration, nightlife.",
+          message: "Tous les champs sont requis.",
         });
       }
 
       const method = getDbMethod();
 
-      // 1) vérifier booking existe
+      // 1) Vérifier le booking
       const [bkRows] = await db[method](
-        `SELECT id, currency FROM bookings WHERE id = ? LIMIT 1`,
+        `SELECT id, package_type FROM bookings WHERE id = ? LIMIT 1`,
         [Number(bookingId)]
       );
+
       if (!bkRows || bkRows.length === 0) {
-        return res.status(404).json({ message: "Booking not found." });
+        return res.status(404).json({ message: "Réservation introuvable." });
       }
 
-      // 2) récupérer pricing actif selon packageType
-      const map = {
-        "go-direct": {
-          table: "pricing_go_direct",
-          priceField: "minimumPrice",
-          where: "isActive = 1",
-        },
-        "standard": {
-          table: "pricing_standard_smart",
-          priceField: "price",
-          where: "isActive = 1",
-        },
-        "celebration": {
-          table: "pricing_celebration",
-          priceField: "price",
-          where: "isActive = 1",
-        },
-        "nightlife": {
-          table: "pricing_nightlife",
-          priceField: "price",
-          where: "isActive = 1",
-        },
+      const packageType = bkRows[0].package_type;
+
+      // 2) Vérifier la disponibilité (On vérifie juste qu'elle existe et est active)
+      const [avRows] = await db[method](
+        `SELECT id FROM availabilities WHERE id = ? AND status = 'available' LIMIT 1`,
+        [Number(availabilityId)]
+      );
+
+      if (!avRows || avRows.length === 0) {
+        return res.status(404).json({ message: "Ce créneau n'est plus disponible." });
+      }
+
+      // 3) Tarification
+      const pricingMap = {
+        "go-direct": { table: "pricing_go_direct", field: "pricePerKm" },
+        "standard": { table: "pricing_standard_smart", field: "price" },
+        "celebration": { table: "pricing_celebration", field: "price" },
+        "nightlife": { table: "pricing_nightlife", field: "price" },
       };
 
-      const cfg = map[packageType];
-
-      const [pRows] = await db[method](
-        `SELECT * FROM ${cfg.table} WHERE ${cfg.where} ORDER BY id DESC LIMIT 1`
-      );
+      const cfg = pricingMap[packageType];
+      const [pRows] = await db[method](`SELECT * FROM ${cfg.table} ORDER BY id DESC LIMIT 1`);
 
       if (!pRows || pRows.length === 0) {
-        return res.status(404).json({
-          message: `No active pricing found for ${packageType}.`,
-        });
+        return res.status(404).json({ message: "Tarification introuvable." });
       }
 
-      const pricing = pRows[0];
-      const pricingId = Number(pricing.id);
+      const basePrice = pRows[0][cfg.field];
 
-      // prix de base à enregistrer dans bookings.total_price
-      const basePrice = pricing?.[cfg.priceField];
-      const basePriceNumber = basePrice != null ? Number(basePrice) : null;
-
-      // snapshot JSON (utile si les prix changent plus tard)
-      const snapshot = JSON.stringify(pricing);
-
-      // 3) upsert booking_packages (1 row par booking)
-      const [existing] = await db[method](
-        `SELECT id FROM booking_packages WHERE booking_id = ? LIMIT 1`,
-        [Number(bookingId)]
+      // 4) MISE À JOUR UNIQUE (Plus propre et évite l'erreur d'unicité si la contrainte est levée)
+      await db[method](
+        `UPDATE bookings 
+       SET arrival_time = ?, 
+           pickup_location = ?, 
+           total_price = ?, 
+           period_id = ?, 
+           status = 'draft',
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+        [pickupTime, pickupLocation, basePrice, Number(availabilityId), Number(bookingId)]
       );
 
-      let packageId = null;
-
-      if (existing && existing.length > 0) {
-        packageId = Number(existing[0].id);
-
-        await db[method](
-          `UPDATE booking_packages
-         SET package_type = ?, pricing_table = ?, pricing_id = ?, pricing_snapshot = ?
-         WHERE booking_id = ?`,
-          [packageType, cfg.table, pricingId, snapshot, Number(bookingId)]
-        );
-      } else {
-        const [ins] = await db[method](
-          `INSERT INTO booking_packages (booking_id, package_type, pricing_table, pricing_id, pricing_snapshot)
-         VALUES (?, ?, ?, ?, ?)`,
-          [Number(bookingId), packageType, cfg.table, pricingId, snapshot]
-        );
-        packageId = ins.insertId;
-      }
-
-      // 4) update bookings.total_price (prix base)
-      // (go-direct => minimumPrice, standard/celebration/nightlife => price)
-      if (basePriceNumber != null) {
-        await db[method](
-          `UPDATE bookings
-         SET total_price = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-          [basePriceNumber, Number(bookingId)]
-        );
-      }
-
       return res.status(200).json({
-        message: "Booking package saved.",
+        message: "Détails enregistrés avec succès.",
         bookingId: Number(bookingId),
-        packageId,
         packageType,
-        pricing: {
-          table: cfg.table,
-          id: pricingId,
-          snapshot: pricing, // renvoyé pour affichage côté front
-        },
-        totalPrice: basePriceNumber,
-        currency: bkRows[0]?.currency || "EUR",
+        totalPrice: basePrice
       });
+
     } catch (err) {
+      console.error("Error in setBookingAvailabilityAndDetails:", err);
       next(err);
     }
   },
@@ -336,240 +248,187 @@ module.exports = {
     }
   },
 
-  // FINALIZE – Prepare booking for payment (status: pending)
-  // NOW: based on PACKAGE price (no period required)
-finalizeBookingForPayment: async (req, res, next) => {
-  try {
-    const { bookingId } = req.body;
-
-    if (!bookingId) {
-      return res.status(400).json({ message: "bookingId is required." });
-    }
-
-    const method = getDbMethod();
-
-    // 1) Load booking (status + currency + customer email)
-    const [bkRows] = await db[method](
-      `
-      SELECT 
-        b.id,
-        b.status,
-        b.currency,
-        ci.email AS customerEmail
-      FROM bookings b
-      LEFT JOIN booking_customer_info ci ON ci.id = b.customer_info_id
-      WHERE b.id = ?
-      LIMIT 1
-      `,
-      [Number(bookingId)]
-    );
-
-    if (!bkRows || bkRows.length === 0) {
-      return res.status(404).json({ message: "Booking not found." });
-    }
-
-    const bk = bkRows[0];
-
-    // 2) Blocking states
-    if (bk.status === "in_progress") {
-      return res.status(200).json({
-        message: "Booking already in progress.",
-        bookingId: Number(bookingId),
-        status: "in_progress",
-        currency: bk.currency || "EUR",
-        email: { to: bk.customerEmail || null, sent: false },
-      });
-    }
-
-    if (bk.status === "cancelled") {
-      return res.status(400).json({
-        message: "Booking is cancelled and cannot be paid.",
-        bookingId: Number(bookingId),
-        status: "cancelled",
-      });
-    }
-
-    if (bk.status === "terminated") {
-      return res.status(400).json({
-        message: "Booking already terminated.",
-        bookingId: Number(bookingId),
-        status: "terminated",
-      });
-    }
-
-    // 3) Load selected package
-    const [pkgRows] = await db[method](
-      `
-      SELECT 
-        id,
-        package_type,
-        pricing_table,
-        pricing_id,
-        pricing_snapshot
-      FROM booking_packages
-      WHERE booking_id = ?
-      LIMIT 1
-      `,
-      [Number(bookingId)]
-    );
-
-    if (!pkgRows || pkgRows.length === 0) {
-      return res.status(400).json({
-        message: "Booking package is missing. Please choose a package first.",
-      });
-    }
-
-    const pkg = pkgRows[0];
-    const packageType = (pkg.package_type || "").toString();
-    const pricingTable = (pkg.pricing_table || "").toString();
-    const pricingId = Number(pkg.pricing_id);
-
-    // whitelist tables to avoid SQL injection
-    const allowedTables = new Set([
-      "pricing_go_direct",
-      "pricing_standard_smart",
-      "pricing_celebration",
-      "pricing_nightlife",
-    ]);
-
-    if (!allowedTables.has(pricingTable) || !Number.isFinite(pricingId) || pricingId <= 0) {
-      return res.status(400).json({ message: "Invalid package pricing reference." });
-    }
-
-    // 4) Load pricing row (source of truth)
-    const [priceRows] = await db[method](
-      `SELECT * FROM ${pricingTable} WHERE id = ? LIMIT 1`,
-      [pricingId]
-    );
-
-    if (!priceRows || priceRows.length === 0) {
-      return res.status(404).json({ message: "Package pricing not found." });
-    }
-
-    const pricing = priceRows[0];
-
-    let packagePrice = null;
-    if (pricingTable === "pricing_go_direct") packagePrice = pricing.minimumPrice;
-    else packagePrice = pricing.price;
-
-    const packagePriceNumber = packagePrice != null ? Number(packagePrice) : null;
-    if (!Number.isFinite(packagePriceNumber) || packagePriceNumber < 0) {
-      return res.status(400).json({ message: "Invalid package price." });
-    }
-
-    // 5) Options total
-    const [optRows] = await db[method](
-      `
-      SELECT COALESCE(SUM(price * COALESCE(quantity, 1)), 0) AS optionsTotal
-      FROM booking_options
-      WHERE booking_id = ?
-      `,
-      [Number(bookingId)]
-    );
-
-    const optionsTotal = Number(optRows?.[0]?.optionsTotal || 0);
-
-    // 6) Total
-    const totalPrice = Number((packagePriceNumber + optionsTotal).toFixed(2));
-
-    // 7) Finalize booking = in_progress
-    await db[method](
-      `
-      UPDATE bookings
-      SET total_price = ?, status = 'in_progress'
-      WHERE id = ?
-      `,
-      [totalPrice, Number(bookingId)]
-    );
-
-    // 8) EMAIL (ne bloque jamais la finalisation) + infos réservation
-    let emailSent = false;
-    const to = (bk.customerEmail || "").toString().trim();
-
+  // =========================
+  // STEP 4 – Personal Infos
+  // =========================
+  savePersonalInfo: async (req, res, next) => {
     try {
-      if (to) {
-        const { transporter, fromEmail } = require("../../templates/emails/transporter");
-        const bookingDetailsTemplate = require("../../templates/emails/templates/booking-details.template");
+      const { bookingId, firstName, lastName, email, phone } = req.body;
 
-        // ✅ récupérer les options (name + price + qty)
-        const [optionRows] = await db[method](
-          `
-          SELECT 
-            o.name,
-            bo.price,
-            bo.quantity
-          FROM booking_options bo
-          JOIN options o ON o.id = bo.option_id
-          WHERE bo.booking_id = ?
-          ORDER BY o.id ASC
-          `,
-          [Number(bookingId)]
-        );
-
-        const options = (optionRows || []).map((r) => ({
-          name: r.name,
-          price: Number(r.price) * Number(r.quantity || 1),
-        }));
-
-        const html = bookingDetailsTemplate({
-          brandName: "GO-Shuttle",
-          bookingId: Number(bookingId),
-          packageType,
-          packagePrice: Number(packagePriceNumber.toFixed(2)),
-          options,
-          optionsTotal: Number(optionsTotal.toFixed(2)),
-          totalPrice: Number(totalPrice.toFixed(2)),
-          currency: bk.currency || "EUR",
-        });
-
-        await transporter.sendMail({
-          from: fromEmail,
-          to,
-          subject: "GO-Shuttle – Confirmation de réservation",
-          html,
-        });
-
-        emailSent = true;
+      if (!bookingId || !firstName || !lastName || !email || !phone) {
+        return res.status(400).json({ message: "Tous les champs sont requis." });
       }
-    } catch (e) {
-      emailSent = false;
-      console.error("Email error:", e?.message || e);
+
+      const method = getDbMethod();
+
+      // 1. Sauvegarde des infos client
+      const [custRes] = await db[method](
+        `INSERT INTO booking_customer_info (first_name, last_name, email, phone) 
+         VALUES (?, ?, ?, ?)`,
+        [firstName, lastName, email, phone]
+      );
+
+      const customerInfoId = custRes.insertId;
+
+      // 2. Mise à jour du booking
+      // On utilise 'pending' car 'confirmed_pending_payment' n'est pas dans votre ENUM actuel
+      await db[method](
+        `UPDATE bookings 
+         SET customer_info_id = ?, 
+             status = 'pending', 
+             updated_at = CURRENT_TIMESTAMP 
+         WHERE id = ?`,
+        [customerInfoId, Number(bookingId)]
+      );
+
+      return res.status(200).json({
+        message: "Informations enregistrées. Statut passé à 'pending'.",
+        bookingId: Number(bookingId),
+        customerInfoId: customerInfoId
+      });
+
+    } catch (err) {
+      console.error("Erreur savePersonalInfo:", err);
+      // Important : renvoyer une erreur 500 pour que le frontend sache que ça a échoué
+      res.status(500).json({ message: "Erreur serveur lors de la mise à jour du statut." });
     }
+  },
 
-    return res.status(200).json({
-      message: "Payment successful. Booking is now in progress.",
-      bookingId: Number(bookingId),
+  // =========================
+  // FINALIZE – Prepare booking for payment & Send Email
+  // =========================
+  finalizeBookingForPayment: async (req, res, next) => {
+    try {
+      const { bookingId } = req.body;
 
-      package: {
-        packageId: Number(pkg.id),
-        packageType,
-        pricingTable,
-        pricingId,
-        snapshot: (() => {
-          try {
-            return pkg.pricing_snapshot ? JSON.parse(pkg.pricing_snapshot) : pricing;
-          } catch {
-            return pricing;
-          }
-        })(),
-      },
+      if (!bookingId) {
+        return res.status(400).json({ message: "bookingId is required." });
+      }
 
-      packagePrice: Number(packagePriceNumber.toFixed(2)),
-      optionsTotal: Number(optionsTotal.toFixed(2)),
-      totalPrice,
+      const method = getDbMethod();
 
-      status: "in_progress",
-      currency: bk.currency || "EUR",
+      // 1) Charger la réservation et les infos client
+      const [bkRows] = await db[method](
+        `
+        SELECT 
+          b.id,
+          b.status,
+          b.package_type,
+          b.total_price,
+          b.currency,
+          ci.first_name,
+          ci.last_name,
+          ci.email AS customerEmail
+        FROM bookings b
+        LEFT JOIN booking_customer_info ci ON ci.id = b.customer_info_id
+        WHERE b.id = ?
+        LIMIT 1
+        `,
+        [Number(bookingId)]
+      );
 
-      email: {
-        to: to || null,
-        sent: emailSent,
-      },
-    });
-  } catch (err) {
-    next(err);
-  }
-},
+      if (!bkRows || bkRows.length === 0) {
+        return res.status(404).json({ message: "Booking not found." });
+      }
+
+      const bk = bkRows[0];
+
+      // 2) Sécurités sur les statuts
+      if (bk.status === "in_progress") {
+        return res.status(200).json({ message: "Booking already paid/in progress.", bookingId: bk.id, status: "in_progress" });
+      }
+      if (bk.status === "cancelled") {
+        return res.status(400).json({ message: "Booking is cancelled." });
+      }
+
+      // 3) Récupérer le prix de base depuis la table de pricing correspondante
+      const packageType = bk.package_type;
+      const pricingMap = {
+        "go-direct": { table: "pricing_go_direct", field: "pricePerKm" },
+        "standard": { table: "pricing_standard_smart", field: "price" },
+        "celebration": { table: "pricing_celebration", field: "price" },
+        "nightlife": { table: "pricing_nightlife", field: "price" },
+      };
+
+      const cfg = pricingMap[packageType];
+      if (!cfg) return res.status(400).json({ message: "Invalid package type." });
+
+      const [pRows] = await db[method](`SELECT ${cfg.field} AS basePrice FROM ${cfg.table} ORDER BY id DESC LIMIT 1`);
+      const basePrice = Number(pRows?.[0]?.basePrice || 0);
+
+      // 4) Récupérer le détail des options pour l'email
+      const [optionRows] = await db[method](
+        `
+        SELECT 
+          o.name,
+          bo.price,
+          bo.quantity
+        FROM booking_options bo
+        JOIN options o ON o.id = bo.option_id
+        WHERE bo.booking_id = ?
+        `,
+        [Number(bookingId)]
+      );
+
+      const options = (optionRows || []).map(r => ({
+        name: r.name,
+        price: Number(r.price) * Number(r.quantity || 1)
+      }));
+
+      const optionsTotal = options.reduce((sum, opt) => sum + opt.price, 0);
+      const totalPrice = Number((basePrice + optionsTotal).toFixed(2));
+
+      // 5) Mise à jour finale du statut en 'in_progress' (considéré comme payé)
+      await db[method](
+        `UPDATE bookings SET total_price = ?, status = 'in_progress', updated_at = NOW() WHERE id = ?`,
+        [totalPrice, Number(bookingId)]
+      );
+
+      // 6) ENVOI DE L'EMAIL
+      let emailSent = false;
+      const to = (bk.customerEmail || "").trim();
+
+      if (to) {
+        try {
+          // Utilisation du template importé en haut du fichier
+          const html = bookingConfirmationTemplate({
+            brandName: "GO-Shütle",
+            customerName: `${bk.first_name} ${bk.last_name}`,
+            bookingId: Number(bookingId),
+            packageType: packageType.toUpperCase(),
+            packagePrice: basePrice,
+            options: options,
+            optionsTotal: optionsTotal,
+            totalPrice: totalPrice,
+            currency: bk.currency || "EUR"
+          });
+
+          await transporter.sendMail({
+            from: fromEmail,
+            to: to,
+            subject: `Confirmation de réservation GO-Shüitle #${bookingId}`,
+            html: html
+          });
+          emailSent = true;
+        } catch (mailErr) {
+          console.error("Mail sending failed:", mailErr);
+        }
+      }
+
+      // 7) Réponse finale au frontend
+      return res.status(200).json({
+        message: "Finalization successful.",
+        bookingId: Number(bookingId),
+        totalPrice,
+        status: "in_progress",
+        emailSent
+      });
+
+    } catch (err) {
+      console.error("Finalize error:", err);
+      next(err);
+    }
+  },
 
   // =========================
   // GET – Next available date
@@ -622,5 +481,7 @@ finalizeBookingForPayment: async (req, res, next) => {
       next(err);
     }
   },
+
+
 
 };

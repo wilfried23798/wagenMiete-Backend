@@ -1,21 +1,27 @@
-// src/emails/templates/booking-details.template.js
-
+/**
+ * Formate le prix avec la devise
+ */
 function money(val, currency = "EUR") {
   const n = Number(val ?? 0);
   const fixed = Number.isFinite(n) ? n.toFixed(2) : "0.00";
-  return currency === "EUR" ? `€ ${fixed}` : `${fixed} ${currency}`;
+  return currency === "EUR" ? `${fixed} €` : `${fixed} ${currency}`;
 }
 
+/**
+ * Traduit le label du package
+ */
 function packageLabel(p) {
-  if (p === "go-direct") return "GO-Direct";
-  if (p === "standard") return "Standard";
-  if (p === "celebration") return "Celebration";
-  if (p === "nightlife") return "Nightlife";
-  return String(p || "");
+  const labels = {
+    "go-direct": "Liaison Directe (GO-Direct)",
+    "standard": "Formule Standard",
+    "celebration": "Événement & Célébration",
+    "nightlife": "Sortie Nocturne (Nightlife)"
+  };
+  return labels[p] || String(p || "");
 }
 
 module.exports = function bookingDetailsTemplate({
-  brandName = "GO-Shuttle",
+  brandName = "GO-Shütle",
   bookingId,
   packageType,
   packagePrice,
@@ -25,36 +31,19 @@ module.exports = function bookingDetailsTemplate({
   currency = "EUR",
 } = {}) {
   const year = new Date().getFullYear();
+  const dateStr = new Date().toLocaleDateString('fr-FR', {
+    day: 'numeric', month: 'long', year: 'numeric'
+  });
 
-  const optionsHtml = options.length
-    ? `
-      <div style="margin-top:10px;border:1px solid rgba(15,23,42,.10);border-radius:12px;overflow:hidden;">
-        <div style="padding:10px 12px;background:rgba(15,23,42,.03);font-size:12px;font-weight:700;">
-          Options sélectionnées
-        </div>
-        <div style="padding:10px 12px;font-size:13px;line-height:1.6;">
-          ${options
-            .map(
-              (o) => `
-            <div style="display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid rgba(15,23,42,.06);">
-              <div>${String(o.name || "Option")}</div>
-              <div style="font-weight:700;">${money(o.price, currency)}</div>
-            </div>
-          `
-            )
-            .join("")}
-          <div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0;">
-            <div style="font-weight:700;">Total options</div>
-            <div style="font-weight:900;">${money(optionsTotal, currency)}</div>
-          </div>
-        </div>
-      </div>
-    `
-    : `
-      <div style="margin-top:10px;padding:10px 12px;border:1px solid rgba(15,23,42,.10);border-radius:12px;background:rgba(15,23,42,.02);font-size:13px;">
-        Aucune option sélectionnée.
-      </div>
-    `;
+  // Construction de la liste des options
+  const optionsRows = options.length
+    ? options.map((o) => `
+      <tr>
+        <td style="padding: 12px 0; border-bottom: 1px solid #f1f5f9; color: #475569; font-size: 14px;">${String(o.name || "Option")}</td>
+        <td style="padding: 12px 0; border-bottom: 1px solid #f1f5f9; color: #0f172a; font-size: 14px; text-align: right; font-weight: 600;">${money(o.price, currency)}</td>
+      </tr>
+    `).join("")
+    : `<tr><td colspan="2" style="padding: 12px 0; color: #94a3b8; font-size: 13px; font-style: italic;">Aucune option supplémentaire</td></tr>`;
 
   return `
   <!doctype html>
@@ -62,72 +51,99 @@ module.exports = function bookingDetailsTemplate({
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>${brandName}</title>
+      <title>Facture ${brandName}</title>
+      <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        body { font-family: 'Inter', Arial, sans-serif !important; }
+      </style>
     </head>
 
-    <body style="margin:0;padding:0;background:#f6f7fb;font-family:Arial,Helvetica,sans-serif;color:#0f172a;">
-      <div style="width:100%;padding:24px 12px;">
-        <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid rgba(15,23,42,.12);border-radius:14px;overflow:hidden;">
-
-          <!-- Header -->
-          <div style="padding:18px 18px 14px;background:#ffffff;border-bottom:1px solid rgba(15,23,42,.08);">
-            <div style="font-size:14px;font-weight:700;letter-spacing:.2px;color:#0f172a;">
-              ${brandName}
-            </div>
-            <div style="margin-top:6px;font-size:12px;line-height:1.5;color:rgba(15,23,42,.65);">
-              Confirmation et informations importantes
-            </div>
+    <body style="margin:0;padding:0;background-color:#f8fafc;color:#0f172a;">
+      <div style="width:100%;padding:40px 0;">
+        <div style="max-width:600px;margin:0 auto;background-color:#ffffff;border-radius:0px;box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
+          
+          <div style="padding: 40px; border-bottom: 2px solid #f1f5f9;">
+            <table width="100%" border="0" cellpadding="0" cellspacing="0">
+              <tr>
+                <td>
+                  <div style="font-size: 24px; font-weight: 800; letter-spacing: -0.5px; color: #003087;">${brandName.toUpperCase()}</div>
+                  <div style="font-size: 12px; color: #64748b; margin-top: 5px; text-transform: uppercase; letter-spacing: 1px;">Service de transport privé</div>
+                </td>
+                <td style="text-align: right;">
+                  <div style="font-size: 18px; font-weight: 700; color: #0f172a;">FACTURE</div>
+                  <div style="font-size: 13px; color: #64748b;">#${String(bookingId).padStart(6, '0')}</div>
+                  <div style="font-size: 13px; color: #64748b;">${dateStr}</div>
+                </td>
+              </tr>
+            </table>
           </div>
 
-          <!-- Content -->
-          <div style="padding:18px;">
+          <div style="padding: 40px;">
+            <table width="100%" border="0" cellpadding="0" cellspacing="0">
+              <thead>
+                <tr>
+                  <th style="text-align: left; font-size: 12px; text-transform: uppercase; color: #94a3b8; letter-spacing: 1px; padding-bottom: 15px;">Description</th>
+                  <th style="text-align: right; font-size: 12px; text-transform: uppercase; color: #94a3b8; letter-spacing: 1px; padding-bottom: 15px;">Montant</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style="padding: 15px 0; border-bottom: 1px solid #f1f5f9;">
+                    <div style="font-weight: 700; font-size: 15px; color: #0f172a;">${packageLabel(packageType)}</div>
+                    <div style="font-size: 13px; color: #64748b; margin-top: 2px;">Prestation de transport principale</div>
+                  </td>
+                  <td style="padding: 15px 0; border-bottom: 1px solid #f1f5f9; text-align: right; font-weight: 700; font-size: 15px;">
+                    ${money(packagePrice, currency)}
+                  </td>
+                </tr>
+                
+                ${optionsRows}
+              </tbody>
+            </table>
 
-            <h2 style="margin:0 0 10px;font-size:16px;line-height:1.3;color:#0f172a;">
-              Détails de votre réservation
-            </h2>
-
-            <div style="padding:12px 12px;border:1px solid rgba(15,23,42,.10);border-radius:12px;background:rgba(15,23,42,.02);font-size:13px;line-height:1.7;">
-              <div><strong>Réservation :</strong> #${Number(bookingId || 0)}</div>
-              <div style="margin-top:6px;"><strong>Formule :</strong> ${packageLabel(packageType)}</div>
-              <div style="margin-top:6px;"><strong>Prix formule :</strong> ${money(packagePrice, currency)}</div>
-              <div style="margin-top:6px;"><strong>Total :</strong> ${money(totalPrice, currency)}</div>
-            </div>
-
-            ${optionsHtml}
-
-            <h2 style="margin:18px 0 10px;font-size:16px;line-height:1.3;color:#0f172a;">
-              Politique d’annulation
-            </h2>
-
-            <div style="font-size:13px;line-height:1.7;color:rgba(15,23,42,.78);">
-              <div style="padding:12px 12px;border:1px solid rgba(15,23,42,.10);border-radius:12px;background:rgba(15,23,42,.02);">
-                <div style="margin:0 0 8px;">
-                  <strong>&gt; 24h avant le départ</strong><br/>
-                  Remboursement 100%
-                </div>
-
-                <div style="margin:0 0 8px;">
-                  <strong>Entre 24h et 6h</strong><br/>
-                  Frais d’annulation 50%
-                </div>
-
-                <div style="margin:0;">
-                  <strong>&lt; 6h ou No-show</strong><br/>
-                  Frais d’annulation 100%<br/>
-                  En cas de No-show (absence), le trajet est considéré comme dû et non remboursable.
-                </div>
-              </div>
-            </div>
-
+            <table width="100%" border="0" cellpadding="0" cellspacing="0" style="margin-top: 30px;">
+              <tr>
+                <td width="60%"></td>
+                <td width="40%">
+                  <table width="100%">
+                    <tr>
+                      <td style="padding: 5px 0; color: #64748b; font-size: 14px;">Sous-total</td>
+                      <td style="padding: 5px 0; text-align: right; font-size: 14px; font-weight: 600;">${money(totalPrice, currency)}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding: 5px 0; color: #64748b; font-size: 14px;">TVA (0%)</td>
+                      <td style="padding: 5px 0; text-align: right; font-size: 14px; font-weight: 600;">0,00 €</td>
+                    </tr>
+                    <tr>
+                      <td style="padding: 20px 0 0; color: #0f172a; font-size: 16px; font-weight: 800;">TOTAL</td>
+                      <td style="padding: 20px 0 0; text-align: right; font-size: 22px; font-weight: 800; color: #003087;">${money(totalPrice, currency)}</td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
           </div>
 
-          <!-- Footer -->
-          <div style="padding:14px 18px;background:#ffffff;border-top:1px solid rgba(15,23,42,.08);">
-            <div style="font-size:11px;line-height:1.6;color:rgba(15,23,42,.60);">
-              Cet email est un message automatique. Merci de ne pas répondre directement.
-            </div>
-            <div style="margin-top:6px;font-size:11px;line-height:1.6;color:rgba(15,23,42,.60);">
-              © ${year} ${brandName}. Tous droits réservés.
+          <div style="margin: 0 40px 40px; padding: 20px; background-color: #f8fafc; border-radius: 8px;">
+            <div style="font-size: 12px; font-weight: 700; text-transform: uppercase; color: #475569; margin-bottom: 10px; letter-spacing: 0.5px;">Conditions d'annulation</div>
+            <table width="100%" style="font-size: 11px; color: #64748b; line-height: 1.5;">
+              <tr>
+                <td style="padding-bottom: 5px;"><strong>+24h avant :</strong> Remboursement 100%</td>
+              </tr>
+              <tr>
+                <td style="padding-bottom: 5px;"><strong>24h à 6h avant :</strong> Frais d'annulation 50%</td>
+              </tr>
+              <tr>
+                <td><strong>-6h ou No-show :</strong> Non remboursable (100% frais)</td>
+              </tr>
+            </table>
+          </div>
+
+          <div style="padding: 30px 40px; background-color: #0f172a; color: #ffffff; text-align: center;">
+            <div style="font-size: 13px; font-weight: 600; opacity: 0.9;">Merci de votre confiance, ${brandName}</div>
+            <div style="font-size: 11px; opacity: 0.6; margin-top: 10px;">
+              Ceci est une facture électronique générée automatiquement.<br/>
+              &copy; ${year} ${brandName} • Tous droits réservés.
             </div>
           </div>
 

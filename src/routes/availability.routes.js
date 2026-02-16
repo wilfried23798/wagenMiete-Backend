@@ -10,4 +10,8 @@ router.get("/", availabilityController.getAllAvailabilities);
 
 router.delete("/:id", availabilityController.deleteAvailability);
 
+router.post("/night", availabilityController.createNightAvailability);
+
+router.delete("/night/:id", availabilityController.deleteNightAvailability);
+
 module.exports = router;
