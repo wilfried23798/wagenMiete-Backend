@@ -43,34 +43,42 @@ module.exports = {
     }
   },
 
-  // =========================
-  // STEP 2 – Choose available and inser Time and Locasition
-  // =========================
-  setBookingAvailabilityAndDetails: async (req, res, next) => {
-    try {
-      const { bookingId, availabilityId, pickupTime, pickupLocation } = req.body;
+// =========================
+// STEP 2 – Liaison Disponibilité (Standard ou Custom) et Détails
+// =========================
+setBookingAvailabilityAndDetails: async (req, res, next) => {
+  try {
+    const { 
+      bookingId, 
+      availabilityId,   // ID de la table availabilities (si choix standard)
+      customRequestId,  // ID de la table custom_availability_requests (si choix personnalisé)
+      pickupTime, 
+      pickupLocation 
+    } = req.body;
 
-      if (!bookingId || !availabilityId || !pickupTime || !pickupLocation) {
-        return res.status(400).json({
-          message: "Tous les champs sont requis.",
-        });
-      }
+    if (!bookingId || (!availabilityId && !customRequestId) || !pickupTime || !pickupLocation) {
+      return res.status(400).json({
+        message: "Tous les champs (Booking, Disponibilité, Heure, Lieu) sont requis.",
+      });
+    }
 
-      const method = getDbMethod();
+    const method = getDbMethod();
 
-      // 1) Vérifier le booking
-      const [bkRows] = await db[method](
-        `SELECT id, package_type FROM bookings WHERE id = ? LIMIT 1`,
-        [Number(bookingId)]
-      );
+    // 1) Vérifier le booking
+    const [bkRows] = await db[method](
+      `SELECT id, package_type FROM bookings WHERE id = ? LIMIT 1`,
+      [Number(bookingId)]
+    );
 
-      if (!bkRows || bkRows.length === 0) {
-        return res.status(404).json({ message: "Réservation introuvable." });
-      }
+    if (!bkRows || bkRows.length === 0) {
+      return res.status(404).json({ message: "Réservation introuvable." });
+    }
 
-      const packageType = bkRows[0].package_type;
+    const packageType = bkRows[0].package_type;
 
-      // 2) Vérifier la disponibilité (On vérifie juste qu'elle existe et est active)
+    // 2) Validation de la disponibilité choisie
+    if (availabilityId) {
+      // Cas standard : Vérifier qu'elle est toujours libre
       const [avRows] = await db[method](
         `SELECT id FROM availabilities WHERE id = ? AND status = 'available' LIMIT 1`,
         [Number(availabilityId)]
@@ -80,49 +88,70 @@ module.exports = {
         return res.status(404).json({ message: "Ce créneau n'est plus disponible." });
       }
 
-      // 3) Tarification
-      const pricingMap = {
-        "go-direct": { table: "pricing_go_direct", field: "pricePerKm" },
-        "standard": { table: "pricing_standard_smart", field: "price" },
-        "celebration": { table: "pricing_celebration", field: "price" },
-        "nightlife": { table: "pricing_nightlife", field: "price" },
-      };
+      // Marquer la disponibilité standard comme 'pending'
+      await db[method](
+        `UPDATE availabilities SET status = 'pending', updatedAt = CURRENT_TIMESTAMP WHERE id = ?`,
+        [Number(availabilityId)]
+      );
+    } else if (customRequestId) {
+      // Cas personnalisé : Vérifier que la requête existe
+      const [custRows] = await db[method](
+        `SELECT id FROM custom_availability_requests WHERE id = ? LIMIT 1`,
+        [Number(customRequestId)]
+      );
 
-      const cfg = pricingMap[packageType];
-      const [pRows] = await db[method](`SELECT * FROM ${cfg.table} ORDER BY id DESC LIMIT 1`);
-
-      if (!pRows || pRows.length === 0) {
-        return res.status(404).json({ message: "Tarification introuvable." });
+      if (!custRows || custRows.length === 0) {
+        return res.status(404).json({ message: "Demande personnalisée introuvable." });
       }
 
-      const basePrice = pRows[0][cfg.field];
+      // Note : Le statut reste 'pending' dans custom_availability_requests par défaut
+    }
 
-      // 4) MISE À JOUR UNIQUE (Plus propre et évite l'erreur d'unicité si la contrainte est levée)
-      await db[method](
-        `UPDATE bookings 
+    // 3) Récupération du prix (Pricing Map)
+    const pricingMap = {
+      "go-direct": { table: "pricing_go_direct", field: "pricePerKm" },
+      "standard": { table: "pricing_standard_smart", field: "price" },
+      "celebration": { table: "pricing_celebration", field: "price" },
+      "nightlife": { table: "pricing_nightlife", field: "price" },
+    };
+
+    const cfg = pricingMap[packageType];
+    const [pRows] = await db[method](`SELECT * FROM ${cfg.table} ORDER BY id DESC LIMIT 1`);
+
+    if (!pRows || pRows.length === 0) {
+      return res.status(404).json({ message: "Tarification introuvable." });
+    }
+
+    const basePrice = pRows[0][cfg.field];
+
+    // 4) MISE À JOUR DU BOOKING
+    // On enregistre l'availability_id (si standard) ou on laisse NULL (si custom)
+    // On peut aussi mettre à jour le statut du booking en 'pending' ou 'draft'
+    await db[method](
+      `UPDATE bookings 
        SET arrival_time = ?, 
            pickup_location = ?, 
            total_price = ?, 
-           period_id = ?, 
-           status = 'draft',
+           availability_id = ?, 
+           status = 'pending',
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-        [pickupTime, pickupLocation, basePrice, Number(availabilityId), Number(bookingId)]
-      );
+      [pickupTime, pickupLocation, basePrice, availabilityId ? Number(availabilityId) : null, Number(bookingId)]
+    );
 
-      return res.status(200).json({
-        message: "Détails enregistrés avec succès.",
-        bookingId: Number(bookingId),
-        packageType,
-        totalPrice: basePrice
-      });
+    return res.status(200).json({
+      message: "Détails enregistrés avec succès.",
+      bookingId: Number(bookingId),
+      packageType,
+      totalPrice: basePrice,
+      isCustom: !!customRequestId
+    });
 
-    } catch (err) {
-      console.error("Error in setBookingAvailabilityAndDetails:", err);
-      next(err);
-    }
-  },
-
+  } catch (err) {
+    console.error("Error in setBookingAvailabilityAndDetails:", err);
+    next(err);
+  }
+},
   // =========================
   // STEP 3 – Set options + update total price (update booking)
   // =========================
@@ -294,9 +323,9 @@ module.exports = {
     }
   },
 
-  // =========================
-  // FINALIZE – Prepare booking for payment & Send Email
-  // =========================
+// ============================================================
+  // FINALIZE – Prepare payment, Mark Availability/Request & Email
+  // ============================================================
   finalizeBookingForPayment: async (req, res, next) => {
     try {
       const { bookingId } = req.body;
@@ -307,7 +336,7 @@ module.exports = {
 
       const method = getDbMethod();
 
-      // 1) Charger la réservation et les infos client
+      // 1) Charger la réservation, les infos client ET les liaisons de disponibilité
       const [bkRows] = await db[method](
         `
         SELECT 
@@ -316,6 +345,9 @@ module.exports = {
           b.package_type,
           b.total_price,
           b.currency,
+          b.availability_id,
+          b.arrival_time,
+          DATE(b.created_at) as booking_date,
           ci.first_name,
           ci.last_name,
           ci.email AS customerEmail
@@ -335,14 +367,13 @@ module.exports = {
 
       // 2) Sécurités sur les statuts
       if (bk.status === "in_progress") {
-        return res.status(200).json({ message: "Booking already paid/in progress.", bookingId: bk.id, status: "in_progress" });
+        return res.status(200).json({ message: "Booking already paid.", bookingId: bk.id, status: "in_progress" });
       }
       if (bk.status === "cancelled") {
         return res.status(400).json({ message: "Booking is cancelled." });
       }
 
-      // 3) Récupérer le prix de base depuis la table de pricing correspondante
-      const packageType = bk.package_type;
+      // 3) Logique de prix (Pricing Map)
       const pricingMap = {
         "go-direct": { table: "pricing_go_direct", field: "pricePerKm" },
         "standard": { table: "pricing_standard_smart", field: "price" },
@@ -350,19 +381,16 @@ module.exports = {
         "nightlife": { table: "pricing_nightlife", field: "price" },
       };
 
-      const cfg = pricingMap[packageType];
+      const cfg = pricingMap[bk.package_type];
       if (!cfg) return res.status(400).json({ message: "Invalid package type." });
 
       const [pRows] = await db[method](`SELECT ${cfg.field} AS basePrice FROM ${cfg.table} ORDER BY id DESC LIMIT 1`);
       const basePrice = Number(pRows?.[0]?.basePrice || 0);
 
-      // 4) Récupérer le détail des options pour l'email
+      // 4) Récupérer le détail des options
       const [optionRows] = await db[method](
         `
-        SELECT 
-          o.name,
-          bo.price,
-          bo.quantity
+        SELECT o.name, bo.price, bo.quantity
         FROM booking_options bo
         JOIN options o ON o.id = bo.option_id
         WHERE bo.booking_id = ?
@@ -378,24 +406,46 @@ module.exports = {
       const optionsTotal = options.reduce((sum, opt) => sum + opt.price, 0);
       const totalPrice = Number((basePrice + optionsTotal).toFixed(2));
 
-      // 5) Mise à jour finale du statut en 'in_progress' (considéré comme payé)
+      // 5) TRANSACTION ET MISES À JOUR DES STATUTS
+      
+      // A. Mettre à jour le statut du booking en 'in_progress'
       await db[method](
         `UPDATE bookings SET total_price = ?, status = 'in_progress', updated_at = NOW() WHERE id = ?`,
         [totalPrice, Number(bookingId)]
       );
 
-      // 6) ENVOI DE L'EMAIL
+      // B. LOGIQUE DE DISPONIBILITÉ (Standard ou Custom)
+      let finalAvailId = bk.availability_id;
+
+      // Cas 1 : Disponibilité Standard
+      if (finalAvailId) {
+        // On passe le statut de 'pending' à 'reserved'
+        await db[method](
+          `UPDATE availabilities SET status = 'reserved', updatedAt = NOW() WHERE id = ?`,
+          [finalAvailId]
+        );
+      } 
+      
+      // Cas 2 : Demande personnalisée (recherche par booking_id)
+      // On passe le statut de 'pending' à 'approved'
+      await db[method](
+        `UPDATE custom_availability_requests 
+         SET status = 'approved' 
+         WHERE booking_id = ? AND status = 'pending'`,
+        [Number(bookingId)]
+      );
+
+      // 6) ENVOI DE L'EMAIL DE CONFIRMATION
       let emailSent = false;
       const to = (bk.customerEmail || "").trim();
 
       if (to) {
         try {
-          // Utilisation du template importé en haut du fichier
           const html = bookingConfirmationTemplate({
             brandName: "GO-Shütle",
             customerName: `${bk.first_name} ${bk.last_name}`,
             bookingId: Number(bookingId),
-            packageType: packageType.toUpperCase(),
+            packageType: bk.package_type.toUpperCase(),
             packagePrice: basePrice,
             options: options,
             optionsTotal: optionsTotal,
@@ -415,9 +465,9 @@ module.exports = {
         }
       }
 
-      // 7) Réponse finale au frontend
+      // 7) Réponse finale
       return res.status(200).json({
-        message: "Finalization successful.",
+        message: "Finalization successful. Statuses updated to Reserved/Approved.",
         bookingId: Number(bookingId),
         totalPrice,
         status: "in_progress",

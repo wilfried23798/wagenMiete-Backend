@@ -14,4 +14,6 @@ router.post("/night", availabilityController.createNightAvailability);
 
 router.delete("/night/:id", availabilityController.deleteNightAvailability);
 
+router.get("/unreserved", availabilityController.getUnreservedAvailabilities);
+
 module.exports = router;
