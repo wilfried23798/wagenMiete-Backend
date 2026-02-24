@@ -1,6 +1,7 @@
 const db = require("../config/db");
 const { transporter, fromEmail } = require("../../templates/emails/transporter");
 const bookingConfirmationTemplate = require("../../templates/emails/booking-confirmation.template");
+const googleMapsService = require("../../services/googleMaps.service");
 
 function getDbMethod() {
   if (typeof db.execute === "function") return "execute";
@@ -43,92 +44,92 @@ module.exports = {
     }
   },
 
-// =========================
-// STEP 2 – Liaison Disponibilité (Standard ou Custom) et Détails
-// =========================
-setBookingAvailabilityAndDetails: async (req, res, next) => {
-  try {
-    const { 
-      bookingId, 
-      availabilityId,   // ID de la table availabilities (si choix standard)
-      customRequestId,  // ID de la table custom_availability_requests (si choix personnalisé)
-      pickupTime, 
-      pickupLocation 
-    } = req.body;
+  // =========================
+  // STEP 2 – Liaison Disponibilité (Standard ou Custom) et Détails
+  // =========================
+  setBookingAvailabilityAndDetails: async (req, res, next) => {
+    try {
+      const {
+        bookingId,
+        availabilityId,   // ID de la table availabilities (si choix standard)
+        customRequestId,  // ID de la table custom_availability_requests (si choix personnalisé)
+        pickupTime,
+        pickupLocation
+      } = req.body;
 
-    if (!bookingId || (!availabilityId && !customRequestId) || !pickupTime || !pickupLocation) {
-      return res.status(400).json({
-        message: "Tous les champs (Booking, Disponibilité, Heure, Lieu) sont requis.",
-      });
-    }
-
-    const method = getDbMethod();
-
-    // 1) Vérifier le booking
-    const [bkRows] = await db[method](
-      `SELECT id, package_type FROM bookings WHERE id = ? LIMIT 1`,
-      [Number(bookingId)]
-    );
-
-    if (!bkRows || bkRows.length === 0) {
-      return res.status(404).json({ message: "Réservation introuvable." });
-    }
-
-    const packageType = bkRows[0].package_type;
-
-    // 2) Validation de la disponibilité choisie
-    if (availabilityId) {
-      // Cas standard : Vérifier qu'elle est toujours libre
-      const [avRows] = await db[method](
-        `SELECT id FROM availabilities WHERE id = ? AND status = 'available' LIMIT 1`,
-        [Number(availabilityId)]
-      );
-
-      if (!avRows || avRows.length === 0) {
-        return res.status(404).json({ message: "Ce créneau n'est plus disponible." });
+      if (!bookingId || (!availabilityId && !customRequestId) || !pickupTime || !pickupLocation) {
+        return res.status(400).json({
+          message: "Tous les champs (Booking, Disponibilité, Heure, Lieu) sont requis.",
+        });
       }
 
-      // Marquer la disponibilité standard comme 'pending'
+      const method = getDbMethod();
+
+      // 1) Vérifier le booking
+      const [bkRows] = await db[method](
+        `SELECT id, package_type FROM bookings WHERE id = ? LIMIT 1`,
+        [Number(bookingId)]
+      );
+
+      if (!bkRows || bkRows.length === 0) {
+        return res.status(404).json({ message: "Réservation introuvable." });
+      }
+
+      const packageType = bkRows[0].package_type;
+
+      // 2) Validation de la disponibilité choisie
+      if (availabilityId) {
+        // Cas standard : Vérifier qu'elle est toujours libre
+        const [avRows] = await db[method](
+          `SELECT id FROM availabilities WHERE id = ? AND status = 'available' LIMIT 1`,
+          [Number(availabilityId)]
+        );
+
+        if (!avRows || avRows.length === 0) {
+          return res.status(404).json({ message: "Ce créneau n'est plus disponible." });
+        }
+
+        // Marquer la disponibilité standard comme 'pending'
+        await db[method](
+          `UPDATE availabilities SET status = 'pending', updatedAt = CURRENT_TIMESTAMP WHERE id = ?`,
+          [Number(availabilityId)]
+        );
+      } else if (customRequestId) {
+        // Cas personnalisé : Vérifier que la requête existe
+        const [custRows] = await db[method](
+          `SELECT id FROM custom_availability_requests WHERE id = ? LIMIT 1`,
+          [Number(customRequestId)]
+        );
+
+        if (!custRows || custRows.length === 0) {
+          return res.status(404).json({ message: "Demande personnalisée introuvable." });
+        }
+
+        // Note : Le statut reste 'pending' dans custom_availability_requests par défaut
+      }
+
+      // 3) Récupération du prix (Pricing Map)
+      const pricingMap = {
+        "go-direct": { table: "pricing_go_direct", field: "pricePerKm" },
+        "standard": { table: "pricing_standard_smart", field: "price" },
+        "celebration": { table: "pricing_celebration", field: "price" },
+        "nightlife": { table: "pricing_nightlife", field: "price" },
+      };
+
+      const cfg = pricingMap[packageType];
+      const [pRows] = await db[method](`SELECT * FROM ${cfg.table} ORDER BY id DESC LIMIT 1`);
+
+      if (!pRows || pRows.length === 0) {
+        return res.status(404).json({ message: "Tarification introuvable." });
+      }
+
+      const basePrice = pRows[0][cfg.field];
+
+      // 4) MISE À JOUR DU BOOKING
+      // On enregistre l'availability_id (si standard) ou on laisse NULL (si custom)
+      // On peut aussi mettre à jour le statut du booking en 'pending' ou 'draft'
       await db[method](
-        `UPDATE availabilities SET status = 'pending', updatedAt = CURRENT_TIMESTAMP WHERE id = ?`,
-        [Number(availabilityId)]
-      );
-    } else if (customRequestId) {
-      // Cas personnalisé : Vérifier que la requête existe
-      const [custRows] = await db[method](
-        `SELECT id FROM custom_availability_requests WHERE id = ? LIMIT 1`,
-        [Number(customRequestId)]
-      );
-
-      if (!custRows || custRows.length === 0) {
-        return res.status(404).json({ message: "Demande personnalisée introuvable." });
-      }
-
-      // Note : Le statut reste 'pending' dans custom_availability_requests par défaut
-    }
-
-    // 3) Récupération du prix (Pricing Map)
-    const pricingMap = {
-      "go-direct": { table: "pricing_go_direct", field: "pricePerKm" },
-      "standard": { table: "pricing_standard_smart", field: "price" },
-      "celebration": { table: "pricing_celebration", field: "price" },
-      "nightlife": { table: "pricing_nightlife", field: "price" },
-    };
-
-    const cfg = pricingMap[packageType];
-    const [pRows] = await db[method](`SELECT * FROM ${cfg.table} ORDER BY id DESC LIMIT 1`);
-
-    if (!pRows || pRows.length === 0) {
-      return res.status(404).json({ message: "Tarification introuvable." });
-    }
-
-    const basePrice = pRows[0][cfg.field];
-
-    // 4) MISE À JOUR DU BOOKING
-    // On enregistre l'availability_id (si standard) ou on laisse NULL (si custom)
-    // On peut aussi mettre à jour le statut du booking en 'pending' ou 'draft'
-    await db[method](
-      `UPDATE bookings 
+        `UPDATE bookings 
        SET arrival_time = ?, 
            pickup_location = ?, 
            total_price = ?, 
@@ -136,22 +137,22 @@ setBookingAvailabilityAndDetails: async (req, res, next) => {
            status = 'pending',
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      [pickupTime, pickupLocation, basePrice, availabilityId ? Number(availabilityId) : null, Number(bookingId)]
-    );
+        [pickupTime, pickupLocation, basePrice, availabilityId ? Number(availabilityId) : null, Number(bookingId)]
+      );
 
-    return res.status(200).json({
-      message: "Détails enregistrés avec succès.",
-      bookingId: Number(bookingId),
-      packageType,
-      totalPrice: basePrice,
-      isCustom: !!customRequestId
-    });
+      return res.status(200).json({
+        message: "Détails enregistrés avec succès.",
+        bookingId: Number(bookingId),
+        packageType,
+        totalPrice: basePrice,
+        isCustom: !!customRequestId
+      });
 
-  } catch (err) {
-    console.error("Error in setBookingAvailabilityAndDetails:", err);
-    next(err);
-  }
-},
+    } catch (err) {
+      console.error("Error in setBookingAvailabilityAndDetails:", err);
+      next(err);
+    }
+  },
   // =========================
   // STEP 3 – Set options + update total price (update booking)
   // =========================
@@ -323,7 +324,7 @@ setBookingAvailabilityAndDetails: async (req, res, next) => {
     }
   },
 
-// ============================================================
+  // ============================================================
   // FINALIZE – Prepare payment, Mark Availability/Request & Email
   // ============================================================
   finalizeBookingForPayment: async (req, res, next) => {
@@ -407,7 +408,7 @@ setBookingAvailabilityAndDetails: async (req, res, next) => {
       const totalPrice = Number((basePrice + optionsTotal).toFixed(2));
 
       // 5) TRANSACTION ET MISES À JOUR DES STATUTS
-      
+
       // A. Mettre à jour le statut du booking en 'in_progress'
       await db[method](
         `UPDATE bookings SET total_price = ?, status = 'in_progress', updated_at = NOW() WHERE id = ?`,
@@ -424,8 +425,8 @@ setBookingAvailabilityAndDetails: async (req, res, next) => {
           `UPDATE availabilities SET status = 'reserved', updatedAt = NOW() WHERE id = ?`,
           [finalAvailId]
         );
-      } 
-      
+      }
+
       // Cas 2 : Demande personnalisée (recherche par booking_id)
       // On passe le statut de 'pending' à 'approved'
       await db[method](
@@ -531,6 +532,176 @@ setBookingAvailabilityAndDetails: async (req, res, next) => {
       next(err);
     }
   },
+
+  // ============================================================
+  // GET ALL IN_PROGRESS BOOKINGS
+  // Récupère toutes les réservations payées/en cours
+  // ============================================================
+  getInProgressBookings: async (req, res, next) => {
+    try {
+      const method = getDbMethod();
+
+      const [rows] = await db[method](
+        `
+        SELECT 
+          b.id,
+          b.booking_code,
+          b.package_type,
+          b.total_price,
+          b.currency,
+          b.arrival_time,
+          b.pickup_location,
+          b.status,
+          b.created_at,
+          ci.first_name,
+          ci.last_name,
+          ci.email,
+          ci.phone
+        FROM bookings b
+        LEFT JOIN booking_customer_info ci ON ci.id = b.customer_info_id
+        WHERE b.status = 'in_progress'
+        ORDER BY b.created_at DESC
+        `
+      );
+
+      return res.status(200).json({
+        count: rows.length,
+        bookings: rows
+      });
+
+    } catch (err) {
+      console.error("Error fetching in_progress bookings:", err);
+      next(err);
+    }
+  },
+
+  // ============================================================
+  // GET BOOKING DETAILS BY ID
+  // ============================================================
+  getBookingDetails: async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const method = getDbMethod();
+
+      const [rows] = await db[method](
+        `
+      SELECT b.*, ci.first_name, ci.last_name, ci.email, ci.phone
+      FROM bookings b
+      LEFT JOIN booking_customer_info ci ON ci.id = b.customer_info_id
+      WHERE b.id = ?
+      `,
+        [id]
+      );
+
+      if (rows.length === 0) {
+        return res.status(404).json({ message: "Réservation introuvable." });
+      }
+
+      return res.status(200).json(rows[0]);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  // ============================================================
+  // CANCEL BOOKING & RESET AVAILABILITY
+  // ============================================================
+  cancelBooking: async (req, res, next) => {
+    const { id } = req.params;
+    const method = getDbMethod();
+
+    // Utilisation d'une transaction pour la sécurité des données
+    const connection = await db.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      // 1. Récupérer l'ID de disponibilité lié à cette réservation
+      const [booking] = await connection.execute(
+        "SELECT availability_id FROM bookings WHERE id = ?",
+        [id]
+      );
+
+      if (booking.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({ message: "Réservation introuvable." });
+      }
+
+      const availabilityId = booking[0].availability_id;
+
+      // 2. Mettre à jour le statut de la réservation en 'cancelled'
+      await connection.execute(
+        "UPDATE bookings SET status = 'cancelled' WHERE id = ?",
+        [id]
+      );
+
+      // 3. Remettre la disponibilité en 'available'
+      if (availabilityId) {
+        await connection.execute(
+          "UPDATE availabilities SET status = 'available' WHERE id = ?",
+          [availabilityId]
+        );
+      }
+
+      await connection.commit();
+      res.status(200).json({
+        message: "Réservation annulée et créneau libéré avec succès."
+      });
+
+    } catch (err) {
+      await connection.rollback();
+      console.error("Error during cancellation:", err);
+      res.status(500).json({ message: "Erreur lors de l'annulation." });
+    } finally {
+      connection.release();
+    }
+  },
+
+verifyDistance: async (req, res, next) => {
+    try {
+        const { pickupLocation } = req.body;
+
+        if (!pickupLocation) {
+            return res.status(400).json({ success: false, message: "Adresse requise." });
+        }
+
+        // --- TEST DE SÉCURITÉ SANS APPEL GOOGLE ---
+        // Si vous voulez juste tester l'UI sans l'API Distance Matrix :
+        /*
+        return res.status(200).json({
+            success: true,
+            isEligible: true, // On accepte tout pour tester le flux
+            distance: "5.0",
+            message: "Lieu éligible (Mode Test)."
+        });
+        */
+
+        // --- APPEL RÉEL ---
+        const data = await googleMapsService.calculateDistance(pickupLocation);
+        
+        const MAX_DISTANCE = 12; 
+        const isAllowed = data.distanceKm <= MAX_DISTANCE;
+
+        return res.status(200).json({
+            success: true,
+            isEligible: isAllowed,
+            distance: data.distanceKm.toFixed(1),
+            message: isAllowed 
+                ? "Lieu éligible." 
+                : `Hors zone (${data.distanceKm.toFixed(1)}km).`
+        });
+
+    } catch (err) {
+        // Si l'erreur persiste ici, regardez votre terminal Node :
+        // Il affichera "Critical Distance Error: Google API Error: REQUEST_DENIED"
+        console.error("Critical Distance Error:", err.message);
+        
+        res.status(200).json({ // On renvoie 200 pour ne pas bloquer l'UI Angular
+            success: false,
+            isEligible: false,
+            message: "Vérification impossible : " + err.message
+        });
+    }
+}
 
 
 

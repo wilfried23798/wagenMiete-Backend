@@ -19,5 +19,16 @@ router.get('/availability/next-date', bookingController.getNextAvailableDate);
 
 router.post("/finalize-payment", bookingController.finalizeBookingForPayment);
 
+// Récupérer les réservations en cours (Payées)
+router.get("/in-progress", bookingController.getInProgressBookings);
+
+// Récupérer les détails d'une réservation spécifique
+router.get("/details/:id", bookingController.getBookingDetails);
+
+// Annuler une réservation (révoquer la course)
+router.patch("/cancel/:id", bookingController.cancelBooking);
+
+router.post('/verify-distance', bookingController.verifyDistance);
+
 
 module.exports = router;
