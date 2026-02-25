@@ -4,6 +4,7 @@ const cors = require("cors");
 require('dotenv').config();
 
 // ✅ Import routes
+const authRoutes = require("./routes/auth.routes");
 const optionsRoutes = require("./routes/options.routes");
 const vehicleRoutes = require("./routes/vehicle.routes");
 const vehicleImagesRoutes = require("./routes/vehicleImages.routes");
@@ -42,6 +43,7 @@ app.get("/api/health", (req, res) => {
 });
 
 // ✅ API routes
+app.use("/api/auth", authRoutes);
 app.use("/api/options", optionsRoutes);
 app.use("/api/vehicle", vehicleRoutes);
 app.use("/api/vehicle/images", vehicleImagesRoutes);

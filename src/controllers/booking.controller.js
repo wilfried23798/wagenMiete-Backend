@@ -44,15 +44,15 @@ module.exports = {
     }
   },
 
-  // =========================
+// =====================================================================
   // STEP 2 – Liaison Disponibilité (Standard ou Custom) et Détails
-  // =========================
+  // =====================================================================
   setBookingAvailabilityAndDetails: async (req, res, next) => {
     try {
       const {
         bookingId,
-        availabilityId,   // ID de la table availabilities (si choix standard)
-        customRequestId,  // ID de la table custom_availability_requests (si choix personnalisé)
+        availabilityId,   
+        customRequestId,  
         pickupTime,
         pickupLocation
       } = req.body;
@@ -79,23 +79,34 @@ module.exports = {
 
       // 2) Validation de la disponibilité choisie
       if (availabilityId) {
-        // Cas standard : Vérifier qu'elle est toujours libre
+        /* MODIFICATION : On autorise 'available' ET 'pending'.
+           Le créneau n'est bloqué que s'il est 'reserved' ou 'blocked'.
+        */
         const [avRows] = await db[method](
-          `SELECT id FROM availabilities WHERE id = ? AND status = 'available' LIMIT 1`,
+          `SELECT id FROM availabilities 
+           WHERE id = ? 
+           AND status IN ('available', 'pending') 
+           LIMIT 1`,
           [Number(availabilityId)]
         );
 
         if (!avRows || avRows.length === 0) {
-          return res.status(404).json({ message: "Ce créneau n'est plus disponible." });
+          return res.status(404).json({ 
+            message: "Ce créneau a été réservé par un autre utilisateur entre-temps." 
+          });
         }
 
-        // Marquer la disponibilité standard comme 'pending'
+        /* On maintient ou on force le statut à 'pending'. 
+           Cela indique qu'une procédure de réservation est en cours sur ce créneau.
+        */
         await db[method](
-          `UPDATE availabilities SET status = 'pending', updatedAt = CURRENT_TIMESTAMP WHERE id = ?`,
+          `UPDATE availabilities 
+           SET status = 'pending', updatedAt = CURRENT_TIMESTAMP 
+           WHERE id = ?`,
           [Number(availabilityId)]
         );
+
       } else if (customRequestId) {
-        // Cas personnalisé : Vérifier que la requête existe
         const [custRows] = await db[method](
           `SELECT id FROM custom_availability_requests WHERE id = ? LIMIT 1`,
           [Number(customRequestId)]
@@ -104,8 +115,6 @@ module.exports = {
         if (!custRows || custRows.length === 0) {
           return res.status(404).json({ message: "Demande personnalisée introuvable." });
         }
-
-        // Note : Le statut reste 'pending' dans custom_availability_requests par défaut
       }
 
       // 3) Récupération du prix (Pricing Map)
@@ -126,8 +135,6 @@ module.exports = {
       const basePrice = pRows[0][cfg.field];
 
       // 4) MISE À JOUR DU BOOKING
-      // On enregistre l'availability_id (si standard) ou on laisse NULL (si custom)
-      // On peut aussi mettre à jour le statut du booking en 'pending' ou 'draft'
       await db[method](
         `UPDATE bookings 
        SET arrival_time = ?, 
@@ -153,6 +160,7 @@ module.exports = {
       next(err);
     }
   },
+
   // =========================
   // STEP 3 – Set options + update total price (update booking)
   // =========================

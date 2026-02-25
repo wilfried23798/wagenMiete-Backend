@@ -201,17 +201,18 @@ module.exports = {
         }
     },
 
-    // =============================================
-    // Récupérer les disponibilités NON réservées
-    // =============================================
+    // =========================================================================
+    // Récupérer les disponibilités 'available' ou 'pending' non bloquées
+    // =========================================================================
     getUnreservedAvailabilities: async (req, res, next) => {
         try {
             const { vehicleId, date } = req.query;
 
+            // MODIFICATION : On accepte désormais les statuts 'available' ET 'pending'
             let sql = `
             SELECT a.*
             FROM availabilities a
-            WHERE a.status = 'available'
+            WHERE a.status IN ('available', 'pending')
         `;
             const params = [];
 
@@ -225,18 +226,18 @@ module.exports = {
                 params.push(vehicleId);
             }
 
-            // CORRECTION DE LA CLAUSE NOT EXISTS
-            // On cherche si un booking existe pour le même créneau horaire (arrival_time) 
-            // ET la même date que le début du créneau (startDateTime)
+            /* LOGIQUE D'EXCLUSION :
+               On n'exclut la disponibilité que si un booking "définitif" existe.
+               Un booking est considéré comme définitif s'il n'est ni 'cancelled' ni 'pending' 
+               (car un booking 'pending' ne doit pas encore bloquer la visibilité).
+            */
             sql += `
             AND NOT EXISTS (
                 SELECT 1 
                 FROM bookings b 
-                WHERE b.status NOT IN ('cancelled')
+                WHERE b.status NOT IN ('cancelled', 'pending', 'draft')
                 AND b.arrival_time IS NOT NULL
-                -- Comparaison de l'heure : b.arrival_time correspond à l'heure de début du créneau a.startDateTime
                 AND b.arrival_time = TIME(a.startDateTime)
-                -- Comparaison de la date : On s'assure que c'est le même jour
                 AND DATE(b.created_at) = DATE(a.startDateTime)
             )
         `;
@@ -373,6 +374,32 @@ module.exports = {
                 message: "Night availability deleted successfully"
             });
 
+        } catch (err) {
+            return next(err);
+        }
+    },
+
+    // =====================================
+    // Get all NIGHT availabilities
+    // =====================================
+    getNightAvailabilities: async (req, res, next) => {
+        try {
+            // On récupère les créneaux qui ont la note 'night'
+            // OU ceux qui commencent après 20h (sécurité si la note est absente)
+            const [rows] = await db.execute(
+                `
+            SELECT * FROM availabilities 
+            WHERE note = 'night' 
+               OR HOUR(startDateTime) >= 20 
+               OR HOUR(startDateTime) < 5
+            ORDER BY startDateTime ASC
+            `
+            );
+
+            return res.status(200).json({
+                count: rows.length,
+                availabilities: rows
+            });
         } catch (err) {
             return next(err);
         }
