@@ -60,16 +60,16 @@ module.exports = {
         }
     },
 
-   /* ==========================================================================
-        Récupération de tous les abonnés à la newsletter
-       ========================================================================== */
+    /* ==========================================================================
+         Récupération de tous les abonnés à la newsletter
+        ========================================================================== */
     getAllSubscribers: async (req, res, next) => {
         try {
             const sql = "SELECT id, email, created_at FROM newsletter ORDER BY created_at DESC";
-            
+
             // Avec mysql2/promise, on utilise le destructuring [rows]
             const [rows] = await db.query(sql);
-            
+
             return res.status(200).json(rows);
         } catch (err) {
             console.error("Erreur SQL Newsletter:", err);
@@ -92,6 +92,29 @@ module.exports = {
             console.error("Erreur SQL Delete Newsletter:", err);
             return res.status(500).json({ message: "Erreur lors de la suppression." });
         }
-    }
-    
+    },
+
+    /* ==========================================================================
+    Recherche d'abonnés par email (Recherche partielle)
+   ========================================================================== */
+    searchSubscribersByEmail: async (req, res) => {
+        try {
+            const { email } = req.query; // On récupère l'email via l'URL (?email=...)
+
+            if (!email) {
+                return res.status(400).json({ message: "Le paramètre email est requis pour la recherche." });
+            }
+
+            const sql = "SELECT id, email, created_at FROM newsletter WHERE email LIKE ? ORDER BY created_at DESC";
+            const searchTerm = `%${email}%`; // Permet de trouver "test" dans "test@gmail.com"
+
+            const [rows] = await db.query(sql, [searchTerm]);
+
+            return res.status(200).json(rows);
+        } catch (err) {
+            console.error("Erreur Recherche SQL Newsletter:", err);
+            return res.status(500).json({ message: "Erreur lors de la recherche." });
+        }
+    },
+
 };

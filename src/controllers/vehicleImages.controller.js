@@ -4,7 +4,9 @@ const cloudinary = require("../config/cloudinary");
 const streamifier = require("streamifier");
 
 module.exports = {
-    // GET /api/vehicle/images
+    // ==========================================
+    // VEHICLE IMAGES (Galerie de 6 images max par véhicule)
+    // ==========================================
     getVehicleImages: async (req, res) => {
         try {
             const [vehRows] = await db.query("SELECT id FROM vehicle ORDER BY id ASC LIMIT 1");
@@ -28,7 +30,9 @@ module.exports = {
         }
     },
 
-    // PUT /api/vehicle/images
+    // ==========================================
+    // POST /api/vehicle/images  (UPSERT complet de la galerie, max 6 images)
+    // ==========================================
     updateVehicleImages: async (req, res) => {
         try {
             const { images } = req.body;
@@ -97,7 +101,9 @@ module.exports = {
         }
     },
 
-    // ✅ POST /api/vehicle/images/upload  (upload cloudinary + UPSERT DB)
+    // ==========================================
+    // POST /api/vehicle/images/upload  (Upload d’une image à une position précise, remplace l’image existante si déjà présente)
+    // ==========================================
     uploadVehicleImage: async (req, res) => {
         try {
             if (!req.file) {
@@ -177,5 +183,43 @@ module.exports = {
             console.error("uploadVehicleImage error:", err);
             return res.status(500).json({ message: "Cloudinary upload failed" });
         }
-    }
+    },
+
+    // ==========================================
+    // GET /api/vehicle/images/:position (Récupère une image spécifique par sa position)
+    // ==========================================
+    getVehicleImageByPosition: async (req, res) => {
+        try {
+            const position = Number(req.params.position);
+            if (!position || position < 1 || position > 6) {
+                return res.status(400).json({ message: "Invalid position (1..6)" });
+            }
+
+            // On récupère l'ID du premier véhicule
+            const [vehRows] = await db.query("SELECT id FROM vehicle ORDER BY id ASC LIMIT 1");
+            if (!vehRows || vehRows.length === 0) {
+                return res.status(404).json({ message: "Vehicle not found" });
+            }
+            const vehicleId = vehRows[0].id;
+
+            // Requête pour l'image spécifique
+            const [rows] = await db.query(
+                `SELECT id, vehicle_id AS vehicleId, position, url, public_id AS publicId
+             FROM vehicle_images
+             WHERE vehicle_id = ? AND position = ?
+             LIMIT 1`,
+                [vehicleId, position]
+            );
+
+            if (!rows || rows.length === 0) {
+                return res.status(404).json({ message: `No image found at position ${position}` });
+            }
+
+            return res.json(rows[0]);
+        } catch (err) {
+            console.error("getVehicleImageByPosition error:", err);
+            return res.status(500).json({ message: "Server error" });
+        }
+    },
+
 };

@@ -14,4 +14,7 @@ router.get("/subscribers", authController.getAllSubscribers);
 // Route pour supprimer un abonné (optionnel, à sécuriser en production)
 router.delete("/subscribers/:id", authController.deleteSubscriber);
 
+// Route pour rechercher des abonnés par email (optionnel, à sécuriser en production)
+router.get("/subscribers/search", authController.searchSubscribersByEmail);
+
 module.exports = router;

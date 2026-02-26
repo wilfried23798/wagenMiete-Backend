@@ -17,4 +17,7 @@ router.post(
   vehicleImagesController.uploadVehicleImage
 );
 
+// GET /api/vehicle/images/:position
+router.get("/:position", vehicleImagesController.getVehicleImageByPosition);
+
 module.exports = router;

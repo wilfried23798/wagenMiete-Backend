@@ -4,6 +4,7 @@ const vehicleController = require("../controllers/vehicle.controller");
 
 // 🚗 Vehicle
 router.get("/", vehicleController.getVehicle);
+
 router.put("/", vehicleController.updateVehicle);
 
 module.exports = router;
