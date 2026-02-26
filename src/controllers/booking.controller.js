@@ -9,7 +9,6 @@ function getDbMethod() {
 }
 
 module.exports = {
-
   // =========================
   // STEP 1 – Choose package
   // =========================
@@ -44,19 +43,20 @@ module.exports = {
     }
   },
 
-// =====================================================================
+  // =====================================================================
   // STEP 2 – Liaison Disponibilité (Standard ou Custom) et Détails
   // =====================================================================
   setBookingAvailabilityAndDetails: async (req, res, next) => {
     try {
       const {
         bookingId,
-        availabilityId,   
-        customRequestId,  
+        availabilityId,
+        customRequestId,
         pickupTime,
         pickupLocation
       } = req.body;
 
+      // Validation stricte
       if (!bookingId || (!availabilityId && !customRequestId) || !pickupTime || !pickupLocation) {
         return res.status(400).json({
           message: "Tous les champs (Booking, Disponibilité, Heure, Lieu) sont requis.",
@@ -77,47 +77,23 @@ module.exports = {
 
       const packageType = bkRows[0].package_type;
 
-      // 2) Validation de la disponibilité choisie
+      // 2) Gestion de la disponibilité
       if (availabilityId) {
-        /* MODIFICATION : On autorise 'available' ET 'pending'.
-           Le créneau n'est bloqué que s'il est 'reserved' ou 'blocked'.
-        */
         const [avRows] = await db[method](
-          `SELECT id FROM availabilities 
-           WHERE id = ? 
-           AND status IN ('available', 'pending') 
-           LIMIT 1`,
+          `SELECT id FROM availabilities WHERE id = ? AND status IN ('available', 'pending') LIMIT 1`,
           [Number(availabilityId)]
         );
-
         if (!avRows || avRows.length === 0) {
-          return res.status(404).json({ 
-            message: "Ce créneau a été réservé par un autre utilisateur entre-temps." 
-          });
+          return res.status(404).json({ message: "Ce créneau n'est plus disponible." });
         }
-
-        /* On maintient ou on force le statut à 'pending'. 
-           Cela indique qu'une procédure de réservation est en cours sur ce créneau.
-        */
+        // Bloquer le créneau
         await db[method](
-          `UPDATE availabilities 
-           SET status = 'pending', updatedAt = CURRENT_TIMESTAMP 
-           WHERE id = ?`,
+          `UPDATE availabilities SET status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
           [Number(availabilityId)]
         );
-
-      } else if (customRequestId) {
-        const [custRows] = await db[method](
-          `SELECT id FROM custom_availability_requests WHERE id = ? LIMIT 1`,
-          [Number(customRequestId)]
-        );
-
-        if (!custRows || custRows.length === 0) {
-          return res.status(404).json({ message: "Demande personnalisée introuvable." });
-        }
       }
 
-      // 3) Récupération du prix (Pricing Map)
+      // 3) Prix du forfait
       const pricingMap = {
         "go-direct": { table: "pricing_go_direct", field: "pricePerKm" },
         "standard": { table: "pricing_standard_smart", field: "price" },
@@ -127,32 +103,33 @@ module.exports = {
 
       const cfg = pricingMap[packageType];
       const [pRows] = await db[method](`SELECT * FROM ${cfg.table} ORDER BY id DESC LIMIT 1`);
+      const basePrice = (pRows && pRows.length > 0) ? pRows[0][cfg.field] : 0;
 
-      if (!pRows || pRows.length === 0) {
-        return res.status(404).json({ message: "Tarification introuvable." });
-      }
-
-      const basePrice = pRows[0][cfg.field];
-
-      // 4) MISE À JOUR DU BOOKING
+      // 4) Mise à jour finale du booking
       await db[method](
         `UPDATE bookings 
-       SET arrival_time = ?, 
-           pickup_location = ?, 
-           total_price = ?, 
-           availability_id = ?, 
-           status = 'pending',
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-        [pickupTime, pickupLocation, basePrice, availabilityId ? Number(availabilityId) : null, Number(bookingId)]
+             SET arrival_time = ?, 
+                 pickup_location = ?, 
+                 total_price = ?, 
+                 availability_id = ?, 
+                 custom_availability_request_id = ?,
+                 status = 'draft',
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?`,
+        [
+          pickupTime,
+          pickupLocation,
+          basePrice,
+          availabilityId ? Number(availabilityId) : null,
+          customRequestId ? Number(customRequestId) : null,
+          Number(bookingId)
+        ]
       );
 
       return res.status(200).json({
         message: "Détails enregistrés avec succès.",
         bookingId: Number(bookingId),
-        packageType,
-        totalPrice: basePrice,
-        isCustom: !!customRequestId
+        totalPrice: basePrice
       });
 
     } catch (err) {
@@ -664,52 +641,52 @@ module.exports = {
     }
   },
 
-verifyDistance: async (req, res, next) => {
+  verifyDistance: async (req, res, next) => {
     try {
-        const { pickupLocation } = req.body;
+      const { pickupLocation } = req.body;
 
-        if (!pickupLocation) {
-            return res.status(400).json({ success: false, message: "Adresse requise." });
-        }
+      if (!pickupLocation) {
+        return res.status(400).json({ success: false, message: "Adresse requise." });
+      }
 
-        // --- TEST DE SÉCURITÉ SANS APPEL GOOGLE ---
-        // Si vous voulez juste tester l'UI sans l'API Distance Matrix :
-        /*
-        return res.status(200).json({
-            success: true,
-            isEligible: true, // On accepte tout pour tester le flux
-            distance: "5.0",
-            message: "Lieu éligible (Mode Test)."
-        });
-        */
+      // --- TEST DE SÉCURITÉ SANS APPEL GOOGLE ---
+      // Si vous voulez juste tester l'UI sans l'API Distance Matrix :
+      /*
+      return res.status(200).json({
+          success: true,
+          isEligible: true, // On accepte tout pour tester le flux
+          distance: "5.0",
+          message: "Lieu éligible (Mode Test)."
+      });
+      */
 
-        // --- APPEL RÉEL ---
-        const data = await googleMapsService.calculateDistance(pickupLocation);
-        
-        const MAX_DISTANCE = 12; 
-        const isAllowed = data.distanceKm <= MAX_DISTANCE;
+      // --- APPEL RÉEL ---
+      const data = await googleMapsService.calculateDistance(pickupLocation);
 
-        return res.status(200).json({
-            success: true,
-            isEligible: isAllowed,
-            distance: data.distanceKm.toFixed(1),
-            message: isAllowed 
-                ? "Lieu éligible." 
-                : `Hors zone (${data.distanceKm.toFixed(1)}km).`
-        });
+      const MAX_DISTANCE = 12;
+      const isAllowed = data.distanceKm <= MAX_DISTANCE;
+
+      return res.status(200).json({
+        success: true,
+        isEligible: isAllowed,
+        distance: data.distanceKm.toFixed(1),
+        message: isAllowed
+          ? "Lieu éligible."
+          : `Hors zone (${data.distanceKm.toFixed(1)}km).`
+      });
 
     } catch (err) {
-        // Si l'erreur persiste ici, regardez votre terminal Node :
-        // Il affichera "Critical Distance Error: Google API Error: REQUEST_DENIED"
-        console.error("Critical Distance Error:", err.message);
-        
-        res.status(200).json({ // On renvoie 200 pour ne pas bloquer l'UI Angular
-            success: false,
-            isEligible: false,
-            message: "Vérification impossible : " + err.message
-        });
+      // Si l'erreur persiste ici, regardez votre terminal Node :
+      // Il affichera "Critical Distance Error: Google API Error: REQUEST_DENIED"
+      console.error("Critical Distance Error:", err.message);
+
+      res.status(200).json({ // On renvoie 200 pour ne pas bloquer l'UI Angular
+        success: false,
+        isEligible: false,
+        message: "Vérification impossible : " + err.message
+      });
     }
-}
+  }
 
 
 
