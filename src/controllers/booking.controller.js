@@ -56,7 +56,6 @@ module.exports = {
         pickupLocation
       } = req.body;
 
-      // Validation stricte
       if (!bookingId || (!availabilityId && !customRequestId) || !pickupTime || !pickupLocation) {
         return res.status(400).json({
           message: "Tous les champs (Booking, Disponibilité, Heure, Lieu) sont requis.",
@@ -65,7 +64,6 @@ module.exports = {
 
       const method = getDbMethod();
 
-      // 1) Vérifier le booking
       const [bkRows] = await db[method](
         `SELECT id, package_type FROM bookings WHERE id = ? LIMIT 1`,
         [Number(bookingId)]
@@ -86,14 +84,14 @@ module.exports = {
         if (!avRows || avRows.length === 0) {
           return res.status(404).json({ message: "Ce créneau n'est plus disponible." });
         }
-        // Bloquer le créneau
+
+        // CORRECTION ICI : updatedAt au lieu de updated_at pour la table availabilities
         await db[method](
-          `UPDATE availabilities SET status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          `UPDATE availabilities SET status = 'pending', updatedAt = CURRENT_TIMESTAMP WHERE id = ?`,
           [Number(availabilityId)]
         );
       }
 
-      // 3) Prix du forfait
       const pricingMap = {
         "go-direct": { table: "pricing_go_direct", field: "pricePerKm" },
         "standard": { table: "pricing_standard_smart", field: "price" },
@@ -106,6 +104,7 @@ module.exports = {
       const basePrice = (pRows && pRows.length > 0) ? pRows[0][cfg.field] : 0;
 
       // 4) Mise à jour finale du booking
+      // Note: Assurez-vous que la table 'bookings' a bien 'updated_at' (snake_case)
       await db[method](
         `UPDATE bookings 
              SET arrival_time = ?, 
@@ -322,21 +321,12 @@ module.exports = {
 
       const method = getDbMethod();
 
-      // 1) Charger la réservation, les infos client ET les liaisons de disponibilité
+      // 1) Charger les données complètes de la réservation
       const [bkRows] = await db[method](
         `
         SELECT 
-          b.id,
-          b.status,
-          b.package_type,
-          b.total_price,
-          b.currency,
-          b.availability_id,
-          b.arrival_time,
-          DATE(b.created_at) as booking_date,
-          ci.first_name,
-          ci.last_name,
-          ci.email AS customerEmail
+          b.*,
+          ci.first_name, ci.last_name, ci.email AS customerEmail, ci.phone
         FROM bookings b
         LEFT JOIN booking_customer_info ci ON ci.id = b.customer_info_id
         WHERE b.id = ?
@@ -353,27 +343,10 @@ module.exports = {
 
       // 2) Sécurités sur les statuts
       if (bk.status === "in_progress") {
-        return res.status(200).json({ message: "Booking already paid.", bookingId: bk.id, status: "in_progress" });
-      }
-      if (bk.status === "cancelled") {
-        return res.status(400).json({ message: "Booking is cancelled." });
+        return res.status(200).json({ message: "Booking already finalized.", bookingId: bk.id });
       }
 
-      // 3) Logique de prix (Pricing Map)
-      const pricingMap = {
-        "go-direct": { table: "pricing_go_direct", field: "pricePerKm" },
-        "standard": { table: "pricing_standard_smart", field: "price" },
-        "celebration": { table: "pricing_celebration", field: "price" },
-        "nightlife": { table: "pricing_nightlife", field: "price" },
-      };
-
-      const cfg = pricingMap[bk.package_type];
-      if (!cfg) return res.status(400).json({ message: "Invalid package type." });
-
-      const [pRows] = await db[method](`SELECT ${cfg.field} AS basePrice FROM ${cfg.table} ORDER BY id DESC LIMIT 1`);
-      const basePrice = Number(pRows?.[0]?.basePrice || 0);
-
-      // 4) Récupérer le détail des options
+      // 3) Récupérer les options pour le détail de l'email
       const [optionRows] = await db[method](
         `
         SELECT o.name, bo.price, bo.quantity
@@ -388,76 +361,74 @@ module.exports = {
         name: r.name,
         price: Number(r.price) * Number(r.quantity || 1)
       }));
-
       const optionsTotal = options.reduce((sum, opt) => sum + opt.price, 0);
-      const totalPrice = Number((basePrice + optionsTotal).toFixed(2));
 
-      // 5) TRANSACTION ET MISES À JOUR DES STATUTS
-
-      // A. Mettre à jour le statut du booking en 'in_progress'
+      // 4) MISE À JOUR DES STATUTS (Transactions)
+      // A. Booking -> in_progress
       await db[method](
-        `UPDATE bookings SET total_price = ?, status = 'in_progress', updated_at = NOW() WHERE id = ?`,
-        [totalPrice, Number(bookingId)]
-      );
-
-      // B. LOGIQUE DE DISPONIBILITÉ (Standard ou Custom)
-      let finalAvailId = bk.availability_id;
-
-      // Cas 1 : Disponibilité Standard
-      if (finalAvailId) {
-        // On passe le statut de 'pending' à 'reserved'
-        await db[method](
-          `UPDATE availabilities SET status = 'reserved', updatedAt = NOW() WHERE id = ?`,
-          [finalAvailId]
-        );
-      }
-
-      // Cas 2 : Demande personnalisée (recherche par booking_id)
-      // On passe le statut de 'pending' à 'approved'
-      await db[method](
-        `UPDATE custom_availability_requests 
-         SET status = 'approved' 
-         WHERE booking_id = ? AND status = 'pending'`,
+        `UPDATE bookings SET status = 'in_progress', updated_at = NOW() WHERE id = ?`,
         [Number(bookingId)]
       );
 
-      // 6) ENVOI DE L'EMAIL DE CONFIRMATION
-      let emailSent = false;
-      const to = (bk.customerEmail || "").trim();
+      // B. Disponibilités (Standard ou Custom)
+      if (bk.availability_id) {
+        await db[method](`UPDATE availabilities SET status = 'reserved' WHERE id = ?`, [bk.availability_id]);
+      }
+      await db[method](
+        `UPDATE custom_availability_requests SET status = 'approved' WHERE booking_id = ? AND status = 'pending'`,
+        [Number(bookingId)]
+      );
 
-      if (to) {
+      // 5) LOGIQUE D'ENVOI DES EMAILS
+      const supportEmail = `"${process.env.MAIL_FROM_NAME || 'GO-Shuttle'}" <${process.env.MAIL_SUPPORT}>`;
+      const adminEmail = process.env.MAIL_USER;
+
+      // A. Email pour le CLIENT (Facture/Confirmation) envoyé par SUPPORT
+      if (bk.customerEmail) {
         try {
-          const html = bookingConfirmationTemplate({
-            brandName: "GO-Shütle",
+          const clientHtml = bookingConfirmationTemplate({
+            brandName: "GO-Shuttle",
             customerName: `${bk.first_name} ${bk.last_name}`,
-            bookingId: Number(bookingId),
+            bookingId: bk.id,
             packageType: bk.package_type.toUpperCase(),
-            packagePrice: basePrice,
+            totalPrice: bk.total_price,
             options: options,
-            optionsTotal: optionsTotal,
-            totalPrice: totalPrice,
             currency: bk.currency || "EUR"
           });
 
           await transporter.sendMail({
-            from: fromEmail,
-            to: to,
-            subject: `Confirmation de réservation GO-Shüitle #${bookingId}`,
-            html: html
+            from: supportEmail,
+            to: bk.customerEmail,
+            subject: `Votre confirmation de réservation GO-Shuttle #${bk.id}`,
+            html: clientHtml
           });
-          emailSent = true;
-        } catch (mailErr) {
-          console.error("Mail sending failed:", mailErr);
-        }
+        } catch (mErr) { console.error("Client email failed:", mErr); }
       }
 
-      // 7) Réponse finale
+      // B. Email pour l'ADMIN (Seraphin) envoyé par SYSTEM
+      try {
+        await transporter.sendMail({
+          from: supportEmail,
+          to: adminEmail,
+          subject: `🚨 NOUVELLE RÉSERVATION - #${bk.id} (${bk.first_name})`,
+          html: `
+            <div style="font-family: sans-serif; padding: 20px; border: 1px solid #d4af37;">
+              <h2 style="color: #1a1a1a;">Nouvelle réservation à traiter</h2>
+              <p><strong>Booking ID:</strong> #${bk.id}</p>
+              <p><strong>Client:</strong> ${bk.first_name} ${bk.last_name} (${bk.phone || 'Non renseigné'})</p>
+              <p><strong>Forfait:</strong> ${bk.package_type.toUpperCase()}</p>
+              <p><strong>Montant Total:</strong> ${bk.total_price} ${bk.currency}</p>
+              <hr>
+              <p><a href="https://votre-admin-panel.com" style="color: #d4af37;">Accéder au tableau de bord</a></p>
+            </div>
+          `
+        });
+      } catch (mErr) { console.error("Admin notification failed:", mErr); }
+
       return res.status(200).json({
-        message: "Finalization successful. Statuses updated to Reserved/Approved.",
-        bookingId: Number(bookingId),
-        totalPrice,
-        status: "in_progress",
-        emailSent
+        message: "Finalization successful.",
+        bookingId: bk.id,
+        status: "in_progress"
       });
 
     } catch (err) {

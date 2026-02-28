@@ -12,6 +12,7 @@ const bookingRoutes = require("./routes/booking.routes");
 const availabilityRoutes = require("./routes/availability.routes");
 const pricingRoutes = require("./routes/pricing.routes");
 const customAvailabilityRoutes = require("./routes/custom_availability_requests.routes");
+const contactRoutes = require("./routes/contact.routes");
 
 const app = express();
 
@@ -51,6 +52,7 @@ app.use("/api/booking", bookingRoutes);
 app.use("/api/availability", availabilityRoutes);
 app.use("/api/pricing", pricingRoutes);
 app.use("/api/custom-availability", customAvailabilityRoutes);
+app.use("/api/contact", contactRoutes);
 
 // ✅ 404 API (si route inconnue)
 app.use("/api", (req, res) => {
